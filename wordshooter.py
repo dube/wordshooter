@@ -1,8 +1,6 @@
 import arcade
 import random
 import time
-import pyaudio
-import speech_recognition as sr
 
 SCREEN_WIDTH=1000
 SCREEN_HEIGHT=800
@@ -11,8 +9,18 @@ SCREEN_TITLE="Word Blaster"
 CHARACTER_SCALING=1
 PLAYER_MOVEMENT_SPEED=8
 BULLET_SPEED=15
-WORD_SPEED=2
 
+SPEECH_RECOGNITION=True
+PLAY_MUSIC=False
+
+if SPEECH_RECOGNITION:
+    import speech_recognition as sr
+    import _thread
+    import pyaudio
+
+# difficulty
+WORD_SPEED=1
+WORDS_ON_SCREEN=3
 
 class Ship(arcade.Sprite):
     def __init__(self):
@@ -95,7 +103,7 @@ class Word:
             arcade.draw_text(self.typed_word, self.x, self.y,
                     arcade.color.ORANGE, 24)
 
-    def attack(self, key):
+    def attack_letter(self, key):
         if self.destroy==0:
             if self.word[self.attack_pos].lower() == chr(key):
                 self.attack_pos += 1
@@ -109,6 +117,31 @@ class Word:
                     return 0
 
         return 0
+
+    def attack_word(self, word):
+        # some fixes for incorrect recognition choices:
+        word = word.lower()
+        if word == "4":
+            word = "for"
+        elif word == "2":
+            word = "to"
+        elif word == "ar":
+            word = "are"
+        elif word == "b":
+            word = "be"
+        elif word == "orr":
+            word = "or"
+
+        if self.destroy==0:
+            if self.word.lower() == word:
+                self.typed_word=self.word
+                self.destroy=1
+                self.animate_destroy=1
+                return 1
+            else:
+                return 0
+        return 0
+
 
 
 class Star:
@@ -136,26 +169,34 @@ class GameWindow(arcade.Window):
         self.bullet_list=None
         self.word_list=None
         self.star_list=None
+        self.spokenwords=None
+
         self.score=0
 
         self.word_count=0
         self.word_create_delay=0
 
-        self.words = ["what","this","his","I","a","her"
+        self.words = ["what","this","his","I","or","her"
                 ,"word","that","the","poop","can","at"
-                ,"dog","from","frog","foofoo","it","is"
-                ,"in","for","but","sonic","shadow","was"]
+                ,"dog","from","frog","have","it","is"
+                ,"in","for","but","Sonic","Shadow","was"
+                ,"on","we","are","be","with","you"
+                ,"your","and","me","my","as","he"
+                ,"to","of","if"]
 
         arcade.set_background_color(arcade.csscolor.BLACK)
 
         self.lasersound = arcade.Sound("assets/Bonus/sfx_laser2.ogg")
-        self.music = arcade.Sound("assets/Bonus/solar_striker1.mp3",streaming=True)
+        if PLAY_MUSIC:
+            self.music = arcade.Sound("assets/Bonus/solar_striker1.mp3",streaming=True)
 
-    def setup(self):
+    def setup(self,spokenwords):
         self.player_list=arcade.SpriteList()
         self.bullet_list=arcade.SpriteList()
         self.word_list=set()
         self.star_list=set()
+
+        self.spokenwords = spokenwords
         
         self.player_sprite=Ship()
 
@@ -163,7 +204,8 @@ class GameWindow(arcade.Window):
 
         self.create_word()
         
-        self.music.play(pan=0,volume=.01)
+        if PLAY_MUSIC:
+            self.music.play(pan=0,volume=.01)
 
         for _ in range(30):
             self.create_star()
@@ -181,11 +223,28 @@ class GameWindow(arcade.Window):
         for star in self.star_list:
             star.draw()
 
+        score_text = f"Score: {self.score} Shield: {self.player_sprite.shield}"
+        arcade.draw_text(score_text, 10, 10,
+                arcade.csscolor.WHITE, 18)
+
     def update(self, delta_time):
 
-        if self.music.get_stream_position() == 0.0:
-            self.music.play(pan=0,volume=.01)
-            time.sleep(0.03)
+        # use speech recognition to attack the words
+        if SPEECH_RECOGNITION:
+            if self.spokenwords.newwords == 1:
+                for request in self.spokenwords.wordlist.split():
+                    for word in self.word_list:
+                        hit=word.attack_word(request)
+                        if hit > 0:
+                            self.score += 1
+                self.spokenwords.newwords=0
+                self.spokenwords.wordlist=""
+
+
+        if PLAY_MUSIC:
+            if self.music.get_stream_position() == 0.0:
+                self.music.play(pan=0,volume=.01)
+                time.sleep(0.03)
 
         for star in self.star_list:
             star.y -= star.speed
@@ -201,7 +260,7 @@ class GameWindow(arcade.Window):
                 word.destroy=1
                 word.animate_destroy=0
                 self.player_sprite.animate_damage = 1
-                self.score -= 1
+                self.player_sprite.shield -= 1
 
             if word.animate_destroy==1:
 
@@ -225,7 +284,7 @@ class GameWindow(arcade.Window):
                 self.word_list.discard(word)
                 self.create_word()
 
-        if self.word_count < 5 and self.word_create_delay > 80:
+        if self.word_count < WORDS_ON_SCREEN-1 and self.word_create_delay > 80:
             self.create_word()
             self.word_count += 1
             self.word_create_delay = 0
@@ -234,16 +293,13 @@ class GameWindow(arcade.Window):
         self.bullet_list.update()
 
     def on_key_press(self, key, modifiers):
-        #if key > 127:
-            #return
         if key == arcade.key.ESCAPE:
             arcade.close_window()
 
         for word in self.word_list:
-            hit = word.attack(key) 
+            hit = word.attack_letter(key) 
             if hit > 0:
                 self.score += 1
-                print(f"score: {self.score}")
 
                 
 
@@ -257,16 +313,55 @@ class GameWindow(arcade.Window):
         rand_word = random.choice(self.words)
         speed = WORD_SPEED * (1/random.randint(1,3))
 
-        self.word_list.add(Word(rand_word, random.randint(50,SCREEN_WIDTH-40), SCREEN_HEIGHT, speed))
+        self.word_list.add(Word(rand_word, random.randint(50,SCREEN_WIDTH-80), SCREEN_HEIGHT, speed))
 
     def create_star(self):
         self.star_list.add(Star(SCREEN_WIDTH,SCREEN_HEIGHT))
 
+# this function runs in a separate thread to listen for words
+def live_speech(threadname,spokenwords,recognizer,microphone):
+    with microphone as source:
+        while True:
+            try:
+                #recognizer.adjust_for_ambient_noise(source)
+                audio = recognizer.listen(source, phrase_time_limit=2)
+                text = recognizer.recognize_google(audio, language="en-US")
+
+                print(f"heard: {text}")
+                
+                spokenwords.wordlist += " "
+                spokenwords.wordlist += text
+                spokenwords.newwords = 1
+
+
+            except:
+                print("Couldn't understand audio")
+                
+class SpokenWord:
+    def __init__(self):
+        self.wordlist=""
+        self.newwords=0
+
+    
 
 def main():
+
+    # object that is used to communicate between threads
+    spokenwords = SpokenWord()
+
+    if SPEECH_RECOGNITION:
+        recognizer = sr.Recognizer()
+        microphone = sr.Microphone()
+        # set up the speech recognition thread
+        try:
+            _thread.start_new_thread(live_speech, ("Speech Thread", spokenwords,recognizer,microphone,))
+        except:
+            print("Error opening speech thread")
+
     window=GameWindow()
-    window.setup()
+    window.setup(spokenwords)
     arcade.run()
+
 
 if __name__ == "__main__":
     main()
